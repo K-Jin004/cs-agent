@@ -189,26 +189,25 @@ func (s *Server) recall(ctx context.Context, convID int64, query string) []store
 	return mems
 }
 
-// memoryBlock 把召回的记忆拼成 system prompt 的一段。
-func memoryBlock(mems []store.Memory) string {
-	if len(mems) == 0 {
-		return ""
-	}
+// referenceBlock 拼成放在客户来信前面的参考资料段：【知识库】+【历史往来】。
+// 没有内容时明确写"无"，让模型知道没有可用的已知事实。
+func referenceBlock(kb []store.KBHit, mems []store.Memory) string {
 	var b strings.Builder
-	b.WriteString(`
-
-## 与该客户的历史往来（仅供参考）
-以下是过去会话中，业务员实际发给该客户的回复，可用来保持前后一致。
-使用规则：
-- 客户问到的项目如果在历史里出现过具体数字或条款，必须写进该项占位符的括号里，注明日期，供业务员核对，格式：
-  [需业务员确认：<该项内容>（历史 <日期>：<历史上的说法>）]
-- 历史数字可能已过期，不能在占位符之外直接写出，也不能当成当前承诺。
-- 历史里与客户本次问题无关的内容不要提。
-示例：客户问"上次的价格还有效吗？"，历史里业务员 2026-09-10 报过 USD 8.5/pc，则写：
-- Price: [需业务员确认：当前单价是否仍有效（历史 2026-09-10：USD 8.5/pc FOB Shenzhen）]
-`)
-	for i, m := range mems {
-		fmt.Fprintf(&b, "\n[历史%d]\n%s\n", i+1, m.Content)
+	if len(kb) == 0 {
+		b.WriteString("【知识库】无\n")
+	} else {
+		b.WriteString("【知识库】\n")
+		for i, h := range kb {
+			fmt.Fprintf(&b, "[资料%d]《%s》\n%s\n\n", i+1, h.DocTitle, h.Content)
+		}
+	}
+	if len(mems) == 0 {
+		b.WriteString("【历史往来】无\n\n")
+	} else {
+		b.WriteString("【历史往来】\n")
+		for i, m := range mems {
+			fmt.Fprintf(&b, "[历史%d]\n%s\n\n", i+1, m.Content)
+		}
 	}
 	return b.String()
 }

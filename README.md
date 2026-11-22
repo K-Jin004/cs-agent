@@ -26,4 +26,10 @@
     cmd/server        入口 + 内嵌的单页前端
     internal/store    Postgres 访问 + 建表 SQL
     internal/llm      标准库实现的 Claude 调用
-    internal/api      HTTP 接口 + 草稿生成
+    internal/api      HTTP 接口 + 草稿生成、记忆、知识库、润色与安全检查
+    internal/rag      知识库分块 + RRF 融合
+
+## 两个参考模块
+- 记忆：选定会话中业务员发出的问答 → bge-m3 向量，按客户隔离，只给同一客户的草稿做参考。
+- 知识库：公司事实资料（.txt/.md 或粘贴）→ 分块 → 向量 + 关键词（Postgres 全文）→ RRF 融合，所有客户共用。
+草稿里产品事实可直接引用资料原文；价格/交期/条款一律占位符，资料原话只作括号提示。

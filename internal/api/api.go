@@ -33,9 +33,16 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/conversations/{id}/draft", s.regenerateDraft)
 	mux.HandleFunc("POST /api/messages/{id}/send", s.sendDraft)
 	mux.HandleFunc("POST /api/messages/{id}/discard", s.discardDraft)
+	mux.HandleFunc("POST /api/messages/{id}/polish", s.polishDraft)
 	mux.HandleFunc("POST /api/conversations/{id}/remember", s.setRemember)
 	mux.HandleFunc("GET /api/conversations/{id}/memories", s.listMemories)
 	mux.HandleFunc("DELETE /api/memories/{id}", s.deleteMemory)
+	mux.HandleFunc("GET /api/memories", s.listAllMemories)
+	mux.HandleFunc("GET /api/kb/documents", s.listKBDocuments)
+	mux.HandleFunc("POST /api/kb/documents", s.createKBDocument)
+	mux.HandleFunc("GET /api/kb/documents/{id}", s.getKBDocument)
+	mux.HandleFunc("DELETE /api/kb/documents/{id}", s.deleteKBDocument)
+	mux.HandleFunc("POST /api/kb/search", s.kbSearchTest)
 }
 
 // ---------- 会话 ----------
@@ -104,13 +111,12 @@ func (s *Server) customerMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{"message": msg}
-	draft, mems, derr := s.generateDraft(r.Context(), id)
+	res, derr := s.generateDraft(r.Context(), id)
 	if derr != nil {
 		log.Printf("draft failed (conv %d): %v", id, derr)
 		resp["draft_error"] = derr.Error()
 	} else {
-		resp["draft"] = draft
-		resp["memories"] = mems
+		resp["draft"], resp["memories"], resp["kb"], resp["warnings"] = res.Draft, res.Memories, res.KB, res.Warnings
 	}
 	writeJSON(w, 201, resp)
 }
@@ -120,12 +126,12 @@ func (s *Server) regenerateDraft(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	draft, mems, err := s.generateDraft(r.Context(), id)
+	res, err := s.generateDraft(r.Context(), id)
 	if err != nil {
 		fail(w, 502, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"draft": draft, "memories": mems})
+	writeJSON(w, 200, res)
 }
 
 // sendDraft 业务员审核（可改稿）后发送：草稿转为 agent 消息。
@@ -186,36 +192,81 @@ func (s *Server) discardDraft(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 草稿生成 ----------
 
-const systemPrompt = `你是外贸业务员的回复助手。根据下面的对话，为业务员起草对客户最新来信的回复。
+const systemPrompt = `你是外贸业务员的回复助手。为业务员起草对客户最新来信的回复。
+用户消息里可能有三部分：
+- 【知识库】公司的产品与公司资料，是最权威的依据；
+- 【历史往来】业务员过去实际发给该客户的回复；
+- 【客户最新来信】要回复的内容。
 
-规则：
-1. 使用客户最新来信的语言回复，语气专业、简洁、礼貌。
-2. 你不知道任何价格、折扣、最小起订量(MOQ)、交期、付款条款、运费、认证资质、产品参数。绝对不要写出任何具体数字或承诺。
-3. 客户问到的每一项上述信息，都必须在回复里逐项列出，并在对应位置原样插入占位符，格式固定为：
+客户问到的信息分两类，处理方式不同：
+
+A. 商务条款：价格、折扣、最小起订量(MOQ)、交期、付款条款、运费、报价有效期、保修承诺。
+   这些会变，必须由业务员每次确认。一律写成占位符：
    [需业务员确认：<该项内容>]
-   占位符本身保持中文，不要翻译；不要用"我们会确认后回复"之类的笼统说法代替占位符。
-4. 只回答客户在来信中明确问到的项目。客户没有问的项目（例如没问 MOQ、认证、运费）一律不要列出。
-5. 只输出回复正文，不要加解释、标题或签名。
+   如果【知识库】或【历史往来】里出现过，把原话和出处写进占位符括号里作提示：
+   [需业务员确认：<该项内容>（资料《<文档名>》：<原话>）] 或 [需业务员确认：<该项内容>（历史 <日期>：<原话>）]
+   不能在占位符之外写出这些数字。
 
-示例：
-客户来信：Can you quote 500 pcs of model X and tell me the MOQ?
+B. 产品事实：型号、规格、瓦数、尺寸、光效、发光角度、防护等级、材质、认证、功能、公司情况等。
+   - 如果【知识库】或【历史往来】里明确写了，直接照原话写进回复，数字一个字都不要改，也不要补充原文没有的内容。
+   - 两者说法冲突时，以【知识库】为准。
+   - 都没有的，写成占位符 [需业务员确认：<该项内容>]，绝对不要猜。
+   - 资料里没提到不等于没有：除非资料明确写了"没有/不支持"，绝不能说"我们没有某产品/不能做某事"。
+     客户的说法和资料对不上时（例如单位不同、型号写法不同），写成占位符让业务员判断。
+
+其他规则：
+1. 使用客户最新来信的语言回复，语气专业、简洁、礼貌。
+2. 只回答客户明确问到的项目，没问的不要列。
+3. 占位符保持中文，不要翻译；不要用"我们会确认后回复"之类的笼统说法代替占位符。
+4. 只输出回复正文，不要加解释、标题、出处标注或签名。
+
+示例一（有资料）：
+【知识库】
+[资料1]《Model X 规格书》
+Model X: available in black and white. Rated power 18W. Reference price USD 3.2/pc (2026 Q3).
+【历史往来】
+[历史1]
+客户（2026-09-10）：Do you ship to Brazil?
+业务员（2026-09-10）：Yes, we have shipped to Brazil many times.
+【客户最新来信】
+Which colors and power does model X have, and what's the price now?
+回复：
+Thank you for your message.
+- Colors: model X is available in black and white.
+- Power: rated power 18W.
+- Price: [需业务员确认：model X 当前单价（资料《Model X 规格书》：USD 3.2/pc (2026 Q3)）]
+Please let us know if you need any other details.
+
+示例二（没有资料）：
+【知识库】无
+【历史往来】无
+【客户最新来信】
+Can you quote 500 pcs of model X and tell me its power?
 回复：
 Thank you for your inquiry about model X.
 - Unit price for 500 pcs: [需业务员确认：500 pcs 单价]
-- MOQ: [需业务员确认：最小起订量]
+- Power: [需业务员确认：model X 功率]
 Please let us know if you need any other details.`
 
 const maxHistory = 20
 
 var errNoCustomerMsg = errors.New("no customer message to reply to")
 
-func (s *Server) generateDraft(ctx context.Context, convID int64) (*store.Message, []store.Memory, error) {
+// draftResult 草稿及其参考来源（供业务员核对）。
+type draftResult struct {
+	Draft    *store.Message `json:"draft"`
+	Memories []store.Memory `json:"memories"`
+	KB       []store.KBHit  `json:"kb"`
+	Warnings []string       `json:"warnings"` // 需业务员特别核对的句子（如否认产品/能力）
+}
+
+func (s *Server) generateDraft(ctx context.Context, convID int64) (*draftResult, error) {
 	if !s.llm.Enabled() {
-		return nil, nil, errors.New("LLM is not configured (set LLM_MODEL for Ollama, or LLM_PROVIDER=claude with ANTHROPIC_API_KEY)")
+		return nil, errors.New("LLM is not configured (set LLM_MODEL for Ollama, or LLM_PROVIDER=claude with ANTHROPIC_API_KEY)")
 	}
 	msgs, err := s.store.ListMessages(ctx, convID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	var turns []llm.Turn
 	for _, m := range msgs {
@@ -235,7 +286,7 @@ func (s *Server) generateDraft(ctx context.Context, convID int64) (*store.Messag
 		turns = turns[1:]
 	}
 	if len(turns) == 0 || turns[len(turns)-1].Role != "user" {
-		return nil, nil, errNoCustomerMsg
+		return nil, errNoCustomerMsg
 	}
 
 	// 召回查询 = 上一条业务员回复之后客户发来的全部消息（客户可能连发多条）
@@ -243,19 +294,41 @@ func (s *Server) generateDraft(ctx context.Context, convID int64) (*store.Messag
 	for i := len(turns) - 1; i >= 0 && turns[i].Role == "user"; i-- {
 		pending = append([]string{turns[i].Content}, pending...)
 	}
-	mems := s.recall(ctx, convID, strings.Join(pending, "\n"))
+	query := strings.Join(pending, "\n")
+	mems := s.recall(ctx, convID, query)
+	kb, err := s.searchKB(ctx, query)
+	if err != nil { // 知识库是增强不是依赖：检索失败照常出草稿
+		log.Printf("kb search (conv %d): %v", convID, err)
+		kb = nil
+	}
 
 	cctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
-	text, err := s.llm.Complete(cctx, systemPrompt+memoryBlock(mems), turns, 1024)
+	// 参考资料紧挨着客户来信放在最后一条 user 消息里（小模型对 system 末尾的长文本关注度低）
+	last := &turns[len(turns)-1]
+	last.Content = referenceBlock(kb, mems) + "【客户最新来信】\n" + last.Content
+	text, err := s.llm.Complete(cctx, systemPrompt, turns, 1024)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := s.store.DiscardDrafts(ctx, convID); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	draft, err := s.store.AddMessage(ctx, convID, "ai_draft", strings.TrimSpace(text), "draft")
-	return draft, mems, err
+	draft, err := s.store.AddMessage(ctx, convID, "ai_draft", stripCitations(strings.TrimSpace(text)), "draft")
+	if err != nil {
+		return nil, err
+	}
+	if mems == nil {
+		mems = []store.Memory{}
+	}
+	if kb == nil {
+		kb = []store.KBHit{}
+	}
+	warnings := draftWarnings(draft.Content, kb)
+	if warnings == nil {
+		warnings = []string{}
+	}
+	return &draftResult{Draft: draft, Memories: mems, KB: kb, Warnings: warnings}, nil
 }
 
 // ---------- 工具函数 ----------
