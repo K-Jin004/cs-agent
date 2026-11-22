@@ -1,0 +1,13 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: cs
+      POSTGRES_PASSWORD: cs
+      POSTGRES_DB: cs
+    ports:
+      - "5433:5432"   # 5433 避免与 Chatwoot/Nexus 的 5432 冲突
+    volumes:
+      - csdata:/var/lib/postgresql/data
+volumes:
+  csdata:

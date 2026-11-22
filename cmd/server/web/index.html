@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>CS Agent</title>
+<style>
+  * { box-sizing: border-box; }
+  :root { color-scheme: light; }
+  body { margin:0; font:14px/1.5 -apple-system,system-ui,sans-serif; display:flex; height:100vh; color:#222; background:#fff; }
+  #side { width:300px; border-right:1px solid #ddd; display:flex; flex-direction:column; }
+  #side h3 { margin:0; padding:12px; border-bottom:1px solid #eee; }
+  #newform { padding:10px; border-bottom:1px solid #eee; display:flex; flex-direction:column; gap:6px; }
+  #list { overflow:auto; flex:1; }
+  .conv { padding:10px 12px; border-bottom:1px solid #f0f0f0; cursor:pointer; }
+  .conv:hover, .conv.active { background:#f3f6ff; }
+  .conv .n { font-weight:600; } .conv .l { color:#888; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #msgs { flex:1; overflow:auto; padding:16px; background:#fafafa; }
+  .m { max-width:70%; margin:6px 0; padding:8px 12px; border-radius:10px; white-space:pre-wrap; word-break:break-word; }
+  .customer { background:#fff; border:1px solid #e3e3e3; }
+  .agent { background:#dbeafe; margin-left:auto; }
+  #draftbox { border-top:1px solid #ddd; padding:10px; background:#fffbe6; display:none; }
+  #draftbox textarea { width:100%; height:110px; }
+  #compose { border-top:1px solid #ddd; padding:10px; display:flex; gap:8px; }
+  #compose input { flex:1; }
+  button, input, textarea, select { font:inherit; padding:6px 8px; }
+  .tag { font-size:12px; color:#a16207; margin-bottom:4px; }
+  #err { color:#b91c1c; padding:0 10px; }
+  #convbar { display:none; align-items:center; gap:10px; padding:8px 12px; border-bottom:1px solid #ddd; background:#fff; }
+  #convbar .hint { color:#888; font-size:12px; flex:1; }
+  #memPanel { display:none; max-height:40vh; overflow:auto; border-bottom:1px solid #ddd; background:#f8fafc; padding:8px 12px; font-size:13px; }
+  .mem { border:1px solid #e2e8f0; background:#fff; border-radius:6px; padding:6px 8px; margin:6px 0; white-space:pre-wrap; }
+  .mem .meta { color:#888; font-size:12px; display:flex; justify-content:space-between; }
+  .badge { font-size:11px; color:#15803d; margin-left:4px; }
+</style>
+</head>
+<body>
+<div id="side">
+  <h3>会话</h3>
+  <div id="newform">
+    <input id="nName" placeholder="客户名称，例如 John (ACME Ltd)">
+    <input id="nEmail" placeholder="客户邮箱（可选，用于识别同一客户）">
+    <select id="nLang"><option value="en">英语</option><option value="es">西班牙语</option><option value="fr">法语</option><option value="de">德语</option><option value="ru">俄语</option><option value="ar">阿拉伯语</option></select>
+    <button onclick="newConv()">新建会话</button>
+  </div>
+  <div id="list"></div>
+</div>
+<div id="main">
+  <div id="convbar">
+    <label><input type="checkbox" id="remChk" onchange="toggleRemember()"> 记住这次对话</label>
+    <span class="hint">打开后，本会话业务员已发出和之后发出的回复，都会存为该客户的记忆，下次新会话可召回。</span>
+    <button id="memBtn" onclick="toggleMemPanel()">该客户的记忆</button>
+  </div>
+  <div id="memPanel"></div>
+  <div id="msgs"><div style="color:#888">左侧选择或新建一个会话</div></div>
+  <div id="err"></div>
+  <div id="draftbox">
+    <div class="tag">AI 草稿（请核对，尤其是价格、交期、条款，确认后再发送）</div>
+    <textarea id="draftText"></textarea>
+    <details id="memBox" style="display:none; margin-top:6px; font-size:12px; color:#555;"><summary></summary><div id="memList" style="white-space:pre-wrap;"></div></details>
+    <div style="margin-top:6px; display:flex; gap:8px;">
+      <button onclick="sendDraft()">审核并发送</button>
+      <button onclick="regen()">重新生成</button>
+      <button onclick="discard()">丢弃</button>
+    </div>
+  </div>
+  <div id="compose">
+    <input id="custText" placeholder="模拟客户来信（回车发送）">
+    <button onclick="customerSend()">发送客户来信</button>
+  </div>
+</div>
+<script>
+let cur = null, draftId = null, convs = [];
+const $ = id => document.getElementById(id);
+async function api(path, method='GET', body) {
+  const r = await fetch(path, {method, headers:{'content-type':'application/json'}, body: body?JSON.stringify(body):undefined});
+  if (r.status === 204) return null;
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+function showMems(mems) {
+  const box = $('memBox');
+  if (!mems || !mems.length) { box.style.display='none'; return; }
+  box.querySelector('summary').textContent = `参考了该客户 ${mems.length} 条历史记忆`;
+  $('memList').textContent = mems.map((m,i)=>`[历史${i+1}] 会话#${m.conversation_id} · 距离 ${m.distance.toFixed(3)}\n${m.content}`).join('\n\n');
+  box.style.display='block';
+}
+function showErr(e) { $('err').textContent = e ? String(e.message||e) : ''; }
+async function loadList() {
+  const list = await api('/api/conversations'); convs = list;
+  const el = $('list'); el.innerHTML = '';
+  list.forEach(c => {
+    const d = document.createElement('div');
+    d.className = 'conv' + (c.id===cur ? ' active':'');
+    const n = document.createElement('div'); n.className='n'; n.textContent = `#${c.id} ${c.contact_name} · ${c.language}`;
+    if (c.remember) { const b=document.createElement('span'); b.className='badge'; b.textContent='● 记忆中'; n.append(b); }
+    const l = document.createElement('div'); l.className='l'; l.textContent = c.last_message;
+    d.append(n,l); d.onclick = () => { cur=c.id; showMems(null); $('memPanel').style.display='none'; loadMsgs(); loadList(); };
+    el.append(d);
+  });
+}
+function syncConvBar() {
+  const c = convs.find(x => x.id === cur);
+  $('convbar').style.display = c ? 'flex' : 'none';
+  if (c) $('remChk').checked = !!c.remember;
+}
+async function toggleRemember() {
+  const on = $('remChk').checked;
+  showErr(on ? '正在把本会话存为记忆…' : '');
+  try {
+    const r = await api(`/api/conversations/${cur}/remember`,'POST',{remember:on});
+    await loadList();
+    showErr(on ? `已开启记住这次对话，本次新存 ${r.saved} 条记忆` : '已关闭：之后发出的回复不再存为记忆（已存的记忆保留，可在"该客户的记忆"里删除）');
+    if ($('memPanel').style.display==='block') await loadMemPanel();
+  } catch(e){ $('remChk').checked = !on; showErr(e); }
+}
+async function toggleMemPanel() {
+  const p = $('memPanel');
+  if (p.style.display==='block') { p.style.display='none'; return; }
+  p.style.display='block'; await loadMemPanel();
+}
+async function loadMemPanel() {
+  const p = $('memPanel');
+  try {
+    const mems = await api(`/api/conversations/${cur}/memories`);
+    p.innerHTML = '';
+    if (!mems.length) { p.textContent = '该客户还没有记忆。打开"记住这次对话"后，业务员发出的回复会存到这里。'; return; }
+    mems.forEach(m => {
+      const d = document.createElement('div'); d.className='mem';
+      const meta = document.createElement('div'); meta.className='meta';
+      const t = document.createElement('span'); t.textContent = `记忆#${m.id} · 来自会话#${m.conversation_id} · ${m.created_at.slice(0,10)}`;
+      const del = document.createElement('button'); del.textContent='删除';
+      del.onclick = async () => { if (!confirm('删除这条记忆？（原始消息不受影响）')) return;
+        try { await api(`/api/memories/${m.id}`,'DELETE'); await loadMemPanel(); } catch(e){ showErr(e); } };
+      meta.append(t, del);
+      const body = document.createElement('div'); body.textContent = m.content;
+      d.append(meta, body); p.append(d);
+    });
+  } catch(e){ showErr(e); }
+}
+async function loadMsgs() {
+  syncConvBar();
+  if (!cur) return;
+  const msgs = await api(`/api/conversations/${cur}/messages`);
+  const el = $('msgs'); el.innerHTML = '';
+  draftId = null; $('draftbox').style.display = 'none';
+  msgs.forEach(m => {
+    if (m.status === 'draft') { draftId = m.id; $('draftText').value = m.content; $('draftbox').style.display = 'block'; return; }
+    const d = document.createElement('div'); d.className = 'm ' + m.sender; d.textContent = m.content; el.append(d);
+  });
+  el.scrollTop = el.scrollHeight;
+}
+async function newConv() {
+  try {
+    const name = $('nName').value.trim(); if (!name) return;
+    const c = await api('/api/conversations','POST',{name, email:$('nEmail').value.trim(), language:$('nLang').value});
+    $('nName').value=''; $('nEmail').value=''; cur=c.id; showMems(null); $('memPanel').style.display='none'; await loadList(); await loadMsgs(); showErr();
+  } catch(e){ showErr(e); }
+}
+async function customerSend() {
+  if (!cur) return showErr('请先选择会话');
+  const t = $('custText').value.trim(); if (!t) return;
+  $('custText').value=''; showErr('AI 正在生成草稿…');
+  try {
+    const r = await api(`/api/conversations/${cur}/messages`,'POST',{content:t});
+    await loadMsgs(); await loadList(); showMems(r.memories);
+    showErr(r.draft_error ? '草稿生成失败：'+r.draft_error : '');
+  } catch(e){ showErr(e); }
+}
+async function sendDraft() {
+  try { await api(`/api/messages/${draftId}/send`,'POST',{content:$('draftText').value}); showMems(null); await loadMsgs(); await loadList(); showErr(); } catch(e){ showErr(e); }
+}
+async function discard() {
+  try { await api(`/api/messages/${draftId}/discard`,'POST'); await loadMsgs(); showErr(); } catch(e){ showErr(e); }
+}
+async function regen() {
+  showErr('重新生成中…');
+  try { const r = await api(`/api/conversations/${cur}/draft`,'POST'); await loadMsgs(); showMems(r.memories); showErr(); } catch(e){ showErr(e); }
+}
+$('custText').addEventListener('keydown', e => { if (e.key==='Enter') customerSend(); });
+loadList().catch(showErr);
+</script>
+</body>
+</html>
