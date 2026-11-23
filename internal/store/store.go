@@ -187,6 +187,14 @@ func (s *Store) GetMessage(ctx context.Context, id int64) (*Message, error) {
 	return &m, nil
 }
 
+// MarkSent 草稿发送：保存终稿，并记录 AI 原稿和改动比例（0=原样发出，1=完全重写）。
+func (s *Store) MarkSent(ctx context.Context, id int64, content, aiOriginal string, editRatio float64) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE messages SET sender='agent', content=$2, status='sent', ai_original=$3, edit_ratio=$4 WHERE id=$1`,
+		id, content, aiOriginal, editRatio)
+	return err
+}
+
 func (s *Store) UpdateMessage(ctx context.Context, id int64, sender, content, status string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE messages SET sender=$2, content=$3, status=$4 WHERE id=$1`, id, sender, content, status)
@@ -208,6 +216,8 @@ type Memory struct {
 	Content        string    `json:"content"`
 	Distance       float64   `json:"distance"` // 余弦距离，越小越相似
 	CreatedAt      time.Time `json:"created_at"`
+	ContactName    string    `json:"contact_name,omitempty"`
+	OtherCustomer  bool      `json:"other_customer"` // 来自其他客户（价格等已遮盖）
 }
 
 // vecLiteral 把向量转成 pgvector 文本格式 "[0.1,0.2,...]"，避免引入额外依赖。
@@ -250,6 +260,31 @@ func (s *Store) SearchMemories(ctx context.Context, contactID, excludeConv int64
 	for rows.Next() {
 		var m Memory
 		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Content, &m.Distance, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		if m.Distance <= maxDist {
+			out = append(out, m)
+		}
+	}
+	return out, rows.Err()
+}
+
+// SearchOtherMemories 在【其他客户】的记忆里检索类似问答（全局记忆），返回时带上客户名供调用方遮盖。
+func (s *Store) SearchOtherMemories(ctx context.Context, excludeContact int64, vec []float32, k int, maxDist float64) ([]Memory, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT m.id, m.conversation_id, m.content, m.embedding <=> $2::vector AS dist, m.created_at, ct.name
+		 FROM memories m JOIN contacts ct ON ct.id = m.contact_id
+		 WHERE m.contact_id <> $1
+		 ORDER BY dist LIMIT $3`,
+		excludeContact, vecLiteral(vec), k)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Memory{}
+	for rows.Next() {
+		m := Memory{OtherCustomer: true}
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Content, &m.Distance, &m.CreatedAt, &m.ContactName); err != nil {
 			return nil, err
 		}
 		if m.Distance <= maxDist {

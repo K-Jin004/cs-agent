@@ -157,7 +157,6 @@ func (s *Store) KBChunksByIDs(ctx context.Context, ids []int64, vec []float32) (
 type MemoryRow struct {
 	Memory
 	ContactID    int64  `json:"contact_id"`
-	ContactName  string `json:"contact_name"`
 	ContactEmail string `json:"contact_email"`
 }
 
@@ -178,6 +177,30 @@ func (s *Store) ListAllMemories(ctx context.Context) ([]MemoryRow, error) {
 			return nil, err
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RecentAgentReplies 业务员在【其他会话】里最近实际发出的回复，用作"我的语气"示例。
+// 不取本会话：本会话内容已在对话记录里，再当示例会被模型照抄（例如跟进时重复上一封邮件）。
+// 只取业务员真正改写过的回复（edit_ratio >= minEdit），原样发出的 AI 草稿不算"我的语气"。
+func (s *Store) RecentAgentReplies(ctx context.Context, convID int64, limit, minChars int, minEdit float64) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT content FROM messages
+		WHERE sender = 'agent' AND status = 'sent' AND char_length(content) >= $3 AND conversation_id <> $1
+		  AND edit_ratio >= $4
+		ORDER BY id DESC LIMIT $2`, convID, limit, minChars, minEdit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
 	}
 	return out, rows.Err()
 }

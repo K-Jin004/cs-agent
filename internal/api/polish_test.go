@@ -67,3 +67,162 @@ func TestDraftWarnings(t *testing.T) {
 		t.Errorf("expected supported negation warning, got %v", w)
 	}
 }
+
+func TestUnsourcedNumbers(t *testing.T) {
+	src := "我（2026-11-21）：USD 8.5/pc for 5000 pcs, lead time 25 days"
+	if w := unsourcedNumbers("Following up on our quote of USD 8.5/pc for 5000 pcs. [需业务员确认：新价格 7.9]", src); w != nil {
+		t.Errorf("numbers inside placeholders or from sources must not warn: %v", w)
+	}
+	w := unsourcedNumbers("We can offer a 3% discount and ship within 15 days.", src)
+	if len(w) != 1 || !strings.Contains(w[0], "15") || !strings.Contains(w[0], "3") {
+		t.Errorf("want warning for 3 and 15, got %v", w)
+	}
+}
+
+func TestPriceWarnings(t *testing.T) {
+	trusted := "我（2026-11-21）：our price is USD 8.5/pc FOB Shenzhen"
+	if w := priceWarnings("Following up on our quote of USD 8.50/pc. New price: [需业务员确认：新价（资料：USD 7.9/pc）]", trusted); w != nil {
+		t.Errorf("already-sent price and placeholder hints must pass: %v", w)
+	}
+	w := priceWarnings("For 5000 pcs the price is USD 7.9/pc, and we can give 5% discount.", trusted)
+	if len(w) != 2 {
+		t.Fatalf("want 2 warnings (7.9 and 5%%), got %v", w)
+	}
+	if w := priceWarnings("Rated power 40W, 4000 lm, 5 years warranty.", trusted); w != nil {
+		t.Errorf("product specs are not prices: %v", w)
+	}
+}
+
+func TestStripSignaturePlaceholders(t *testing.T) {
+	in := "Best regards,\n[Your Name]\n[Your Company]\n"
+	if got := stripSignaturePlaceholders(in); got != "Best regards," {
+		t.Fatalf("got %q", got)
+	}
+	keep := "Price: [需业务员确认：单价]"
+	if got := stripSignaturePlaceholders(keep); got != keep {
+		t.Fatalf("must keep business placeholders, got %q", got)
+	}
+}
+
+func TestCommitmentWarning(t *testing.T) {
+	w := draftWarnings("Our original quote of USD 8.5/pc remains valid. Logo printing is free.", nil)
+	if len(w) != 1 || !strings.Contains(w[0], "承诺") {
+		t.Fatalf("want 1 commitment warning, got %v", w)
+	}
+}
+
+func TestStripThanksOpener(t *testing.T) {
+	cases := map[string]string{
+		"Thank you for your message.\n\nJust checking in on my last email.": "Just checking in on my last email.",
+		"Dear John,\n\nThank you for your reply! Just checking in.":         "Dear John,\n\nJust checking in.",
+		"Hi Lisa,\nJust checking in on the samples.":                        "Hi Lisa,\nJust checking in on the samples.",
+	}
+	for in, want := range cases {
+		if got := stripThanksOpener(in); got != want {
+			t.Errorf("stripThanksOpener(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestEditRatio(t *testing.T) {
+	if r := editRatio("Thank you. Price is X.", "Thank you. Price is X."); r != 0 {
+		t.Errorf("unchanged should be 0, got %v", r)
+	}
+	if r := editRatio("a b c d e f g h i j", "a b c d e f g h i k"); r < 0.05 || r > 0.15 {
+		t.Errorf("one word of ten changed should be ~0.1, got %v", r)
+	}
+	if r := editRatio("Thank you for your message.", "Hi John, yes we make those."); r < 0.8 {
+		t.Errorf("rewrite should be high, got %v", r)
+	}
+}
+
+func TestAffirmativeContradiction(t *testing.T) {
+	if !isAffirmative("Yes") || !isAffirmative("可以，交期30天") || isAffirmative("follow up") {
+		t.Error("isAffirmative misclassified")
+	}
+	if !hasNegation("Hi,\n\nWe currently do not have a product model sized at 1200x300 mm.") {
+		t.Error("should detect negation")
+	}
+	if hasNegation("Hi,\n\nYes, we make 1200x300 panels. [需业务员确认：功率]") {
+		t.Error("false negation")
+	}
+}
+
+func TestCurlyApostropheNegation(t *testing.T) {
+	if !hasNegation("No, we don’t have standard 1200x300 panels.") {
+		t.Error("curly apostrophe negation not detected")
+	}
+}
+
+func TestAddGreeting(t *testing.T) {
+	c := &store.Conversation{ContactName: "Tom (Omega Ltd)", Language: "en"}
+	if got := addGreeting("Yes, we do make them.", c); got != "Hi Tom,\n\nYes, we do make them." {
+		t.Errorf("got %q", got)
+	}
+	if got := addGreeting("Dear Tom,\n\nYes.", c); got != "Dear Tom,\n\nYes." {
+		t.Errorf("must keep existing greeting, got %q", got)
+	}
+}
+
+func TestAddGreetingWordBoundary(t *testing.T) {
+	c := &store.Conversation{ContactName: "Tom", Language: "en"}
+	if got := addGreeting("Highlights of our new range:", c); got != "Hi Tom,\n\nHighlights of our new range:" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestMaskOtherCustomer(t *testing.T) {
+	in := "客户（2026-11-21）：Hi, please quote 5000 pcs.\n业务员（2026-11-21）：Dear John, our price is USD 8.5/pc FOB Shenzhen, payment 30% T/T deposit, 5 years warranty."
+	got := maskOtherCustomer(in, "John (ACME Ltd)")
+	for _, leak := range []string{"8.5", "30%", "John", "ACME"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("leaked %q in %q", leak, got)
+		}
+	}
+	for _, keep := range []string{"5000 pcs", "5 years warranty", "FOB Shenzhen"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("should keep %q in %q", keep, got)
+		}
+	}
+}
+
+func TestStripNestedCitation(t *testing.T) {
+	in := "- Logo printing: Yes, free for orders above 1000 pcs. (类似问答：客户（2026-11-21）：... logo printing on the carton is free.)\n" +
+		"- Price: [需业务员确认：单价（历史 2026-11-21：<原话> USD 8.5/pc）]"
+	want := "- Logo printing: Yes, free for orders above 1000 pcs.\n" +
+		"- Price: [需业务员确认：单价（历史 2026-11-21： USD 8.5/pc）]"
+	if got := stripCitations(in); got != want {
+		t.Fatalf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestGuardOtherTerms(t *testing.T) {
+	other := []store.Memory{{OtherCustomer: true, Content: "客户：Warranty and logo?\n业务员：We offer a 5-year warranty and free logo printing for orders above 1000 pcs."}}
+	draft := "Hi Nina,\n\n- Warranty: 5 years.\n- We offer free logo printing for orders above 1000 pcs.\n- Power: 40W.\n\nBest regards"
+	got, notes := guardOtherTerms(draft, other, "")
+	if len(notes) != 2 {
+		t.Fatalf("want 2 notes, got %v\n%s", notes, got)
+	}
+	if !strings.Contains(got, "- Warranty: [需业务员确认：5 years"+otherTermHint+"].") ||
+		!strings.Contains(got, "- [需业务员确认：We offer free logo printing for orders above 1000 pcs"+otherTermHint+"].") ||
+		!strings.Contains(got, "- Power: 40W.") {
+		t.Fatalf("unexpected:\n%s", got)
+	}
+	// 业务员自己说过 / 本客户历史里有 → 不改
+	if _, n := guardOtherTerms(draft, other, "We offer 5 years warranty and free logo printing above 1000 pcs"); len(n) != 0 {
+		t.Fatalf("supported terms should pass, got %v", n)
+	}
+	// 没有其他客户的记忆 → 不改
+	if g, n := guardOtherTerms(draft, nil, ""); g != draft || n != nil {
+		t.Fatal("no other memories should be a no-op")
+	}
+	// 年限对不上 → 改
+	if _, n := guardOtherTerms("Warranty: 5 years.", other, "warranty: 3 years"); len(n) != 1 {
+		t.Fatalf("number mismatch should wrap, got %v", n)
+	}
+	// 已在占位符里的不动
+	ph := "Warranty: [需业务员确认：保修期（其他客户：5-year warranty）]"
+	if g, _ := guardOtherTerms(ph, other, ""); g != ph {
+		t.Fatalf("placeholder touched: %s", g)
+	}
+}

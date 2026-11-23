@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,8 +15,10 @@ import (
 )
 
 const (
-	recallTopK    = 3
-	recallMaxDist = 0.55 // 余弦距离阈值，超过视为不相关（bge-m3 经验值，需用真实数据再调）
+	recallTopK         = 3
+	recallMaxDist      = 0.55 // 余弦距离阈值，超过视为不相关（bge-m3 经验值，需用真实数据再调）
+	recallOtherTopK    = 3
+	recallOtherMaxDist = 0.5 // 其他客户的记忆要求更相似才用
 )
 
 // remember 把"这条业务员回复之前、上一条业务员回复之后的客户来信 + 这条回复"存成一条记忆。
@@ -181,12 +184,39 @@ func (s *Server) recall(ctx context.Context, convID int64, query string) []store
 		log.Printf("recall: embed: %v", err)
 		return nil
 	}
+	// 1) 本客户的历史往来：原样使用
 	mems, err := s.store.SearchMemories(ctx, conv.ContactID, convID, vecs[0], recallTopK, recallMaxDist)
 	if err != nil {
 		log.Printf("recall: search: %v", err)
-		return nil
+		mems = nil
+	}
+	// 2) 全局记忆：其他客户的类似问答，学"我们以前怎么答"。
+	//    金额/百分比和对方客户名由代码遮盖，模型看不到别的客户的报价。
+	others, err := s.store.SearchOtherMemories(ctx, conv.ContactID, vecs[0], recallOtherTopK, recallOtherMaxDist)
+	if err != nil {
+		log.Printf("recall: search others: %v", err)
+	}
+	for _, m := range others {
+		m.Content = maskOtherCustomer(m.Content, m.ContactName)
+		mems = append(mems, m)
 	}
 	return mems
+}
+
+var percentRe = regexp.MustCompile(`\d+(?:\.\d+)?\s?%`)
+
+// maskOtherCustomer 遮盖其他客户记忆里的价格、百分比条款和客户名字。
+func maskOtherCustomer(content, contactName string) string {
+	content = moneyRe.ReplaceAllString(content, "[该客户的价格，已隐藏]")
+	content = percentRe.ReplaceAllString(content, "[已隐藏]")
+	for _, n := range strings.Fields(strings.NewReplacer("(", " ", ")", " ", ",", " ").Replace(contactName)) {
+		if len([]rune(n)) < 2 {
+			continue
+		}
+		re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(n) + `\b`)
+		content = re.ReplaceAllString(content, "[客户]")
+	}
+	return content
 }
 
 // referenceBlock 拼成放在客户来信前面的参考资料段：【知识库】+【历史往来】。
@@ -201,12 +231,28 @@ func referenceBlock(kb []store.KBHit, mems []store.Memory) string {
 			fmt.Fprintf(&b, "[资料%d]《%s》\n%s\n\n", i+1, h.DocTitle, h.Content)
 		}
 	}
-	if len(mems) == 0 {
-		b.WriteString("【历史往来】无\n\n")
+	var own, others []store.Memory
+	for _, m := range mems {
+		if m.OtherCustomer {
+			others = append(others, m)
+		} else {
+			own = append(own, m)
+		}
+	}
+	if len(own) == 0 {
+		b.WriteString("【历史往来】无\n")
 	} else {
-		b.WriteString("【历史往来】\n")
-		for i, m := range mems {
+		b.WriteString("【历史往来】（与该客户）\n")
+		for i, m := range own {
 			fmt.Fprintf(&b, "[历史%d]\n%s\n\n", i+1, m.Content)
+		}
+	}
+	if len(others) == 0 {
+		b.WriteString("【类似问答】无\n\n")
+	} else {
+		b.WriteString("【类似问答】（我们过去回答其他客户的同类问题，价格已隐藏）\n")
+		for i, m := range others {
+			fmt.Fprintf(&b, "[类似%d]\n%s\n\n", i+1, m.Content)
 		}
 	}
 	return b.String()

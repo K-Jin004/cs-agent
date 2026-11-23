@@ -34,8 +34,11 @@
   .customer { background:#fff; border:1px solid #e3e3e3; }
   .agent { background:#dbeafe; margin-left:auto; }
   #draftbox { border-top:1px solid #ddd; padding:10px; background:#fffbe6; display:none; }
-  #draftbox textarea { width:100%; height:110px; }
-  #compose { border-top:1px solid #ddd; padding:10px; display:flex; gap:8px; }
+  #draftbox textarea { width:100%; height:170px; resize:vertical; }
+  #compose { border-top:1px solid #eee; padding:6px 10px; display:flex; gap:8px; background:#fafafa; }
+  #writer { border-top:1px solid #ddd; padding:8px 10px; background:#f3faf6; }
+  .chip { font-size:12px; padding:2px 10px; border:1px solid #cfe5da; background:#fff; border-radius:12px; cursor:pointer; }
+  .chip:hover { background:#e3f1ea; }
   #compose input { flex:1; }
   .tag { font-size:12px; color:#a16207; margin-bottom:4px; }
   #err { color:#b91c1c; padding:0 10px; white-space:pre-wrap; }
@@ -92,7 +95,7 @@
 <div id="main">
   <div id="convbar">
     <label><input type="checkbox" id="remChk" onchange="toggleRemember()"> 记住这次对话</label>
-    <span class="hint">打开后，本会话业务员已发出和之后发出的回复，都会存为该客户的记忆，下次新会话可召回。</span>
+    <span class="hint">打开后，本会话业务员已发出和之后发出的回复会存入记忆：该客户下次可召回，其他客户问到类似问题时也会参考（价格隐藏）。</span>
     <button id="memBtn" onclick="toggleMemPanel()">该客户的记忆</button>
   </div>
   <div id="memPanel"></div>
@@ -111,8 +114,23 @@
       <button onclick="discard()">丢弃</button>
     </div>
   </div>
+  <div id="writer">
+    <div class="row" style="margin-bottom:6px; font-size:12px; color:var(--muted)">
+      <strong style="color:var(--accent)">AI 帮我写</strong>
+      <span>快捷：</span>
+      <button class="chip" onclick="chip('Follow up')">跟进 follow up</button>
+      <button class="chip" onclick="chip('礼貌提醒客户确认上次的报价')">提醒确认报价</button>
+      <button class="chip" onclick="chip('告诉客户样品已寄出，快递单号：')">样品已寄出</button>
+      <button class="chip" onclick="chip('感谢客户下单，确认订单细节')">感谢下单</button>
+    </div>
+    <div class="row" style="align-items:stretch; flex-wrap:nowrap">
+      <textarea id="instr" placeholder="一句指示（follow up / 催一下付款 / 告诉他 DHL 单号 123）或一段粗稿都行，AI 会结合对话、资料和你的语气起草。Ctrl/Cmd+Enter 起草" style="flex:1; height:54px; resize:vertical"></textarea>
+      <button class="primary" id="composeBtn" onclick="composeAI()">AI 起草</button>
+    </div>
+  </div>
   <div id="compose">
-    <input id="custText" placeholder="模拟客户来信（回车发送）">
+    <span style="font-size:12px; color:var(--muted); align-self:center">模拟客户来信</span>
+    <input id="custText" placeholder="测试用：输入客户来信（回车发送）">
     <button onclick="customerSend()">发送客户来信</button>
   </div>
 </div>
@@ -124,7 +142,7 @@
   <div class="page-head">
     <div>
       <h2>长期记忆</h2>
-      <p>选定的会话里，业务员发出的问答会转成向量，按客户隔离；只给同一客户的草稿做参考（RAG）。</p>
+      <p>选定的会话里，业务员发出的问答会转成向量。起草时先找本客户的历史往来，再在全部记忆里找其他客户的类似问答（价格和客户名会隐藏后再给 AI）。</p>
     </div>
     <button class="primary" onclick="openRememberPanel()">记住一次对话</button>
   </div>
@@ -214,8 +232,12 @@ function showSources(mems, kb, warnings) {
   };
   if (kb && kb.length) add(`依据知识库 ${kb.length} 段资料`,
     kb.map((h,i)=>`[资料${i+1}]《${h.doc_title}》第 ${h.seq+1} 段 · ${h.via} · 距离 ${h.distance.toFixed(3)}\n${h.content}`).join('\n\n'));
-  if (mems && mems.length) add(`参考了该客户 ${mems.length} 条历史记忆`,
-    mems.map((m,i)=>`[历史${i+1}] 会话#${m.conversation_id} · 距离 ${m.distance.toFixed(3)}\n${m.content}`).join('\n\n'));
+  if (mems && mems.length) {
+    const own = mems.filter(m => !m.other_customer), oth = mems.filter(m => m.other_customer);
+    add(`参考了 ${mems.length} 条记忆（本客户 ${own.length} · 其他客户的类似问答 ${oth.length}）`,
+      [...own.map((m,i)=>`[历史${i+1}] 本客户 · 会话#${m.conversation_id} · 距离 ${m.distance.toFixed(3)}\n${m.content}`),
+       ...oth.map((m,i)=>`[类似${i+1}] 其他客户：${m.contact_name} · 会话#${m.conversation_id} · 距离 ${m.distance.toFixed(3)}（给 AI 时价格和客户名已隐藏）\n${m.content}`)].join('\n\n'));
+  }
 }
 function showErr(e) { $('err').style.color = '#b91c1c'; $('err').textContent = e ? String(e.message||e) : ''; }
 function showOk(t) { $('err').style.color = '#15803d'; $('err').textContent = t; }
@@ -300,6 +322,8 @@ async function customerSend() {
   } catch(e){ showErr(e); }
 }
 async function sendDraft() {
+  const nWarn = document.querySelectorAll('#warnings .warn').length;
+  if (nWarn && $('draftText').value === draftLoaded && !confirm(`这份草稿有 ${nWarn} 条风险提醒，而且你还没有修改过。确定直接发送吗？`)) return;
   try { await api(`/api/messages/${draftId}/send`,'POST',{content:$('draftText').value}); showSources(); await loadMsgs(); await loadList(); showErr(); } catch(e){ showErr(e); }
 }
 async function discard() {
@@ -333,6 +357,19 @@ async function regen() {
   try { const r = await api(`/api/conversations/${cur}/draft`,'POST'); await loadMsgs(); showSources(r.memories, r.kb, r.warnings); showErr(); } catch(e){ showErr(e); }
 }
 $('custText').addEventListener('keydown', e => { if (e.key==='Enter') customerSend(); });
+function chip(text) { const t = $('instr'); t.value = text; t.focus(); t.setSelectionRange(text.length, text.length); }
+async function composeAI() {
+  if (!cur) return showErr('请先选择会话');
+  const instruction = $('instr').value.trim(); if (!instruction) return showErr('先写一句指示或粗稿');
+  if (draftId && $('draftText').value !== draftLoaded && !confirm('当前草稿已被修改，AI 起草会替换它。确定吗？')) return;
+  const btn = $('composeBtn'); btn.disabled = true; showOk('AI 正在结合对话、资料和你的语气起草…');
+  try {
+    const r = await api(`/api/conversations/${cur}/compose`,'POST',{instruction});
+    $('instr').value = '';
+    await loadMsgs(); showSources(r.memories, r.kb, r.warnings); showErr();
+  } catch(e){ showErr(e); } finally { btn.disabled = false; }
+}
+$('instr').addEventListener('keydown', e => { if (e.key==='Enter' && (e.metaKey || e.ctrlKey)) composeAI(); });
 
 // ---------- 记忆页 ----------
 async function loadMemories() {

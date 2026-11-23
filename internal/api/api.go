@@ -43,6 +43,7 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/kb/documents/{id}", s.getKBDocument)
 	mux.HandleFunc("DELETE /api/kb/documents/{id}", s.deleteKBDocument)
 	mux.HandleFunc("POST /api/kb/search", s.kbSearchTest)
+	mux.HandleFunc("POST /api/conversations/{id}/compose", s.composeDraft)
 }
 
 // ---------- 会话 ----------
@@ -156,8 +157,8 @@ func (s *Server) sendDraft(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, errors.New("message is not a pending draft"))
 		return
 	}
-	// 注意：这里是后续"改稿反馈"的采集点（原稿 m.Content vs 终稿 in.Content）。
-	if err := s.store.UpdateMessage(r.Context(), id, "agent", in.Content, "sent"); err != nil {
+	// 改稿反馈采集：记下 AI 原稿和改动比例（用于"我的语气"示例筛选和改稿率统计）
+	if err := s.store.MarkSent(r.Context(), id, in.Content, m.Content, editRatio(m.Content, in.Content)); err != nil {
 		fail(w, 500, err)
 		return
 	}
@@ -193,23 +194,26 @@ func (s *Server) discardDraft(w http.ResponseWriter, r *http.Request) {
 // ---------- 草稿生成 ----------
 
 const systemPrompt = `你是外贸业务员的回复助手。为业务员起草对客户最新来信的回复。
-用户消息里可能有三部分：
-- 【知识库】公司的产品与公司资料，是最权威的依据；
-- 【历史往来】业务员过去实际发给该客户的回复；
+用户消息里可能有这几部分，按参考顺序排列：
+- 【历史往来】业务员过去实际发给该客户的回复——首要参考，保持前后一致；
+- 【类似问答】我们过去回答其他客户同类问题的方式——主要参考"怎么答"，其中的价格已隐藏，不能把其他客户的条款用到这个客户；
+- 【知识库】公司资料——辅助核对产品事实；
 - 【客户最新来信】要回复的内容。
 
 客户问到的信息分两类，处理方式不同：
 
-A. 商务条款：价格、折扣、最小起订量(MOQ)、交期、付款条款、运费、报价有效期、保修承诺。
+A. 商务条款：价格、折扣、最小起订量(MOQ)、交期、付款条款、运费、报价有效期、保修期、免费服务/赠品（如免费印 logo、免费样品）及其条件。
    这些会变，必须由业务员每次确认。一律写成占位符：
    [需业务员确认：<该项内容>]
-   如果【知识库】或【历史往来】里出现过，把原话和出处写进占位符括号里作提示：
-   [需业务员确认：<该项内容>（资料《<文档名>》：<原话>）] 或 [需业务员确认：<该项内容>（历史 <日期>：<原话>）]
+   如果【历史往来】【类似问答】或【知识库】里出现过，把原话和出处写进占位符括号里作提示：
+   [需业务员确认：<该项内容>（历史 <日期>：<原话>）] 或 [需业务员确认：<该项内容>（其他客户 <日期>：<原话>）]
+   或 [需业务员确认：<该项内容>（资料《<文档名>》：<原话>）]
    不能在占位符之外写出这些数字。
+   【类似问答】是给其他客户的条件，可能是单独优惠：其中的商务条款（即使不带数字，如"5 年保修""免费印 logo"）只能写进占位符提示，绝不能直接承诺给这个客户。
 
 B. 产品事实：型号、规格、瓦数、尺寸、光效、发光角度、防护等级、材质、认证、功能、公司情况等。
-   - 如果【知识库】或【历史往来】里明确写了，直接照原话写进回复，数字一个字都不要改，也不要补充原文没有的内容。
-   - 两者说法冲突时，以【知识库】为准。
+   - 如果【历史往来】【类似问答】或【知识库】里明确写了，直接照原话写进回复，数字一个字都不要改，也不要补充原文没有的内容。
+   - 过往回复和【知识库】说法冲突时，不要自己选，写成占位符并在括号里列出两种说法让业务员判断。
    - 都没有的，写成占位符 [需业务员确认：<该项内容>]，绝对不要猜。
    - 资料里没提到不等于没有：除非资料明确写了"没有/不支持"，绝不能说"我们没有某产品/不能做某事"。
      客户的说法和资料对不上时（例如单位不同、型号写法不同），写成占位符让业务员判断。
@@ -314,7 +318,8 @@ func (s *Server) generateDraft(ctx context.Context, convID int64) (*draftResult,
 	if err := s.store.DiscardDrafts(ctx, convID); err != nil {
 		return nil, err
 	}
-	draft, err := s.store.AddMessage(ctx, convID, "ai_draft", stripCitations(strings.TrimSpace(text)), "draft")
+	text, termNotes := guardOtherTerms(stripSignaturePlaceholders(stripCitations(strings.TrimSpace(text))), mems, trustedSupport(sentByAgent(msgs), kb, mems))
+	draft, err := s.store.AddMessage(ctx, convID, "ai_draft", text, "draft")
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +329,8 @@ func (s *Server) generateDraft(ctx context.Context, convID int64) (*draftResult,
 	if kb == nil {
 		kb = []store.KBHit{}
 	}
-	warnings := draftWarnings(draft.Content, kb)
+	warnings := append(termNotes, draftWarnings(draft.Content, kb)...)
+	warnings = append(warnings, priceWarnings(draft.Content, sentByAgent(msgs))...)
 	if warnings == nil {
 		warnings = []string{}
 	}

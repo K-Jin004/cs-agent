@@ -155,9 +155,14 @@ func (s *Server) polishOnce(ctx context.Context, draft string) (string, error) {
 
 // 出处标注只允许出现在占位符括号里（给业务员看）；出现在正文里会被发给客户，所以用代码删掉，
 // 不依赖模型遵守"不要加出处标注"。
-var citationRe = regexp.MustCompile(`\s*[（(](?:资料《[^》]*》|历史\s*\d{4}-\d{2}-\d{2})\s*[:：][^）)]*[）)]`)
+// 标注里可能嵌套括号（例如"（类似问答：客户（2026-11-21）：…）"），所以匹配到该行最后一个右括号。
+var citationRe = regexp.MustCompile(`\s*[（(](?:资料《[^》]*》|历史\s*\d{4}-\d{2}-\d{2}[^：:\n]*|类似问答|其他客户[^：:\n]*)\s*[:：][^\n]*[）)]`)
+
+// 模型偶尔把 prompt 模板里的占位词原样抄进来。
+var templateTokens = strings.NewReplacer("<原话>", "", "<日期>", "", "<文档名>", "", "<该项内容>", "")
 
 func stripCitations(s string) string {
+	s = templateTokens.Replace(s)
 	var b strings.Builder
 	last := 0
 	for _, loc := range placeholderRe.FindAllStringIndex(s, -1) {
