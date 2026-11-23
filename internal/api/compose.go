@@ -21,8 +21,8 @@ import (
 
 const composePrompt = `你是外贸业务员的写信助手。业务员现在要主动给客户发一封邮件（客户不一定有新来信）。
 用户消息里有：【业务员的指示】【对话记录】【历史往来】（与该客户的过往回复）、
-【类似问答】（我们过去回答其他客户同类问题的方式，价格已隐藏）、【知识库】（公司资料，辅助核对）、【我的语气示例】。
-参考顺序：业务员的指示 > 对话记录 > 历史往来 > 类似问答 > 知识库。
+【知识库】（公司资料，核对产品事实）、【我的语气示例】。
+参考顺序：业务员的指示 > 对话记录 > 历史往来 > 知识库。
 
 最重要：【业务员的指示】优先于一切资料。业务员说的就是事实，知识库没提到的以业务员为准；
 草稿绝不能写出与指示意思相反的内容（例如指示是 "Yes"，就不能写"我们没有/不能"）。
@@ -46,8 +46,8 @@ const composePrompt = `你是外贸业务员的写信助手。业务员现在要
 事实规则：
 - 业务员指示里写的数字和事实，可以直接用。
 - 【对话记录】里业务员已经发给客户的内容，可以引用（例如"我们 11 月 21 日的报价"）。
-- 只有指示要求介绍产品或回答产品问题时，才使用【类似问答】【知识库】里的产品信息，并照原文写；
-  过往回复和知识库说法冲突时，写占位符并列出两种说法；其他客户的商务条款（保修、免费服务、起订量等，即使不带数字）只能写进占位符，除非指示里业务员自己说了；
+- 只有指示要求介绍产品或回答产品问题时，才使用【历史往来】【知识库】里的产品信息，并照原文写；
+  过往回复和知识库说法冲突时，写占位符并列出两种说法；
   follow up、催款、寄样通知这类邮件不要罗列产品参数，也不要重复整份报价。
 - 【知识库】里的价格表是内部参考，任何价格、折扣都绝不能写在占位符之外；
   需要提价格时，只能用指示里写的、或【对话记录】里"我"已经报给客户的价格，否则写占位符。
@@ -180,7 +180,6 @@ func (s *Server) compose(ctx context.Context, convID int64, instruction string) 
 	if err := s.store.DiscardDrafts(ctx, convID); err != nil {
 		return nil, err
 	}
-	text, termNotes := guardOtherTerms(text, mems, trustedSupport(instruction+"\n"+sentByAgent(sent), kb, mems))
 	draft, err := s.store.AddMessage(ctx, convID, "ai_draft", text, "draft")
 	if err != nil {
 		return nil, err
@@ -195,7 +194,7 @@ func (s *Server) compose(ctx context.Context, convID int64, instruction string) 
 	for _, m := range mems {
 		src.WriteString(m.Content + "\n")
 	}
-	warnings := append(termNotes, draftWarnings(text, kb)...)
+	warnings := draftWarnings(text, kb)
 	if hasNegation(instruction) || negWordRe.MatchString(instruction) {
 		// 否定是业务员自己说的，不需要"知识库没有依据"的提醒
 		warnings = dropNegationWarnings(warnings)

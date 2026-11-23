@@ -31,6 +31,7 @@ export function ChatPage() {
   const [draft, setDraft] = useState<Message | null>(null);
   const [draftText, setDraftText] = useState('');
   const [prePolish, setPrePolish] = useState<string | null>(null);
+  const [polishRefs, setPolishRefs] = useState<Memory[] | null>(null);
   const [sources, setSources] = useState<Record<number, Sources>>({});
   const [busy, setBusy] = useState<Busy>(null);
   const [memOpen, setMemOpen] = useState(false);
@@ -60,6 +61,7 @@ export function ChatPage() {
     setDraft(d);
     setDraftText(d?.content ?? '');
     setPrePolish(null);
+    setPolishRefs(null);
   }, []);
 
   useEffect(() => { loadList(); }, [loadList]);
@@ -208,14 +210,18 @@ export function ChatPage() {
       const r = await api.polish(draft.id, draftText);
       setPrePolish(draftText);
       setDraftText(r.content);
-      toast(`已润色：${r.numbers_checked} 个数字核对一致${r.attempts > 1 ? `（第 ${r.attempts} 次通过）` : ''}。请再读一遍后发送。`);
+      setPolishRefs(r.references ?? []);
+      const n = r.references?.length ?? 0;
+      toast(`已润色${n ? `，参考了 ${n} 条你过去的回答` : '（没有找到类似的历史回答，按通用写法润色）'}；${r.numbers_checked} 个数字核对一致${r.attempts > 1 ? `（第 ${r.attempts} 次通过）` : ''}。请再读一遍后发送。`);
     } catch (e) {
       if (e instanceof ApiError) {
-        const b = e.body as { placeholders?: string[]; missing?: string[]; added?: string[] };
+        const b = e.body as { placeholders?: string[]; missing?: string[]; added?: string[]; added_terms?: string[]; added_denial?: boolean };
         let msg = e.message;
         if (b.placeholders?.length) msg += '：\n' + b.placeholders.join('\n');
         if (b.missing?.length) msg += `\n润色后缺少/改动的数字：${b.missing.join(', ')}`;
         if (b.added?.length) msg += `\n润色后多出的数字：${b.added.join(', ')}`;
+        if (b.added_terms?.length) msg += `\n润色后多出了原稿没有的条款：${b.added_terms.join(', ')}（可能是从过去的回答里搬来的）`;
+        if (b.added_denial) msg += '\n润色后多出了否定说法（例如"我们没有"）';
         toast(msg, 'err');
       } else fail(e);
     } finally {
@@ -226,6 +232,7 @@ export function ChatPage() {
   const undoPolish = () => {
     if (prePolish !== null) setDraftText(prePolish);
     setPrePolish(null);
+    setPolishRefs(null);
     toast('已恢复润色前的内容', 'info');
   };
 
@@ -275,7 +282,7 @@ export function ChatPage() {
       {!conv ? (
         <div className="flex flex-1 items-center justify-center">
           <EmptyState icon="chat" title={convs.length ? '选择一个会话' : '从新建会话开始'}
-            hint="把客户来信粘贴进来，AI 会参考这个客户的历史往来、其他客户的类似问答和知识库起草回复。价格、交期等商务条款会留成占位符给你确认。" />
+            hint="输入客户来信，AI 参考这个客户的历史往来和知识库起草，关键数据留成占位符给你填；填好后润色，AI 会参考你过去回答类似问题的写法。" />
         </div>
       ) : (
         <section className="flex min-w-0 flex-1 flex-col">
@@ -288,7 +295,7 @@ export function ChatPage() {
               </div>
             </div>
             <div className="ml-auto flex items-center gap-4">
-              <span title="打开后，本会话已发出和之后发出的回复会存入记忆：该客户下次可召回，其他客户问到类似问题时也会参考（价格隐藏）。">
+              <span title="打开后，本会话已发出和之后发出的回复会存入记忆：给这个客户起草时保持说法一致；润色任何客户的类似问题时，参考你的语气和回答方式。">
                 <Toggle checked={conv.remember} disabled={remBusy} onChange={toggleRemember}
                   label={<span className="flex items-center gap-1.5 text-xs text-mist">{remBusy && <Spinner className="h-3 w-3" />}记住这次对话</span>} />
               </span>
@@ -313,7 +320,7 @@ export function ChatPage() {
 
               {draft && !(busy && BUSY_TEXT[busy]) && (
                 <DraftPanel text={draftText} setText={setDraftText} edited={edited} sources={sources[conv.id]} busy={busy}
-                  canUndo={prePolish !== null} onSend={send} onPolish={polish} onUndo={undoPolish} onRegen={regen} onDiscard={discard} />
+                  canUndo={prePolish !== null} polishRefs={polishRefs} onSend={send} onPolish={polish} onUndo={undoPolish} onRegen={regen} onDiscard={discard} />
               )}
             </div>
           </div>
@@ -323,7 +330,7 @@ export function ChatPage() {
       )}
 
       <Drawer open={memOpen} onClose={() => setMemOpen(false)} title={`${conv?.contact_name ?? ''} 的记忆`}
-        subtitle="这个客户过去会话里记住的问答，起草时会优先参考（只有打开了「记住这次对话」的会话才会存）。">
+        subtitle="这个客户过去会话里记住的问答：起草时用来保持说法一致，润色时用来模仿你的写法（只有打开了「记住这次对话」的会话才会存）。">
         {contactMems === null ? (
           <div className="flex justify-center py-10 text-fog"><Spinner /></div>
         ) : !contactMems.length ? (

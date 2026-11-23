@@ -1,8 +1,8 @@
 import { clsx } from 'clsx';
 import { useEffect, useRef } from 'react';
-import { PLACEHOLDER_RE, type Sources } from '../../lib/api';
+import { PLACEHOLDER_RE, type Memory, type Sources } from '../../lib/api';
 import { Badge, Icon, Spinner } from '../../components/ui';
-import { SourcesView } from './SourcesView';
+import { PolishRefs, SourcesView } from './SourcesView';
 
 export type Busy = null | 'customer' | 'regen' | 'compose' | 'polish' | 'send' | 'discard';
 
@@ -12,13 +12,14 @@ function shortLabel(p: string) {
   return inner.split(/[（(]/)[0].trim() || inner;
 }
 
-export function DraftPanel({ text, setText, edited, sources, busy, canUndo, onSend, onPolish, onUndo, onRegen, onDiscard }: {
+export function DraftPanel({ text, setText, edited, sources, busy, canUndo, polishRefs, onSend, onPolish, onUndo, onRegen, onDiscard }: {
   text: string;
   setText: (s: string) => void;
   edited: boolean;
   sources?: Sources;
   busy: Busy;
   canUndo: boolean;
+  polishRefs: Memory[] | null;
   onSend: () => void;
   onPolish: () => void;
   onUndo: () => void;
@@ -92,6 +93,7 @@ export function DraftPanel({ text, setText, edited, sources, busy, canUndo, onSe
         <textarea ref={ref} value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} disabled={working}
           className="field resize-none font-sans text-[13.5px] leading-[22px]" />
 
+        {polishRefs && <PolishRefs refs={polishRefs} />}
         {sources && <SourcesView memories={sources.memories} kb={sources.kb} />}
 
         <div className="flex flex-wrap items-center gap-2 pt-1">

@@ -52,7 +52,7 @@ export function MemoryPage() {
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-6xl px-8 py-8">
         <PageHeader title="长期记忆"
-          desc="选定会话里你发出的问答会转成向量。起草时先找这个客户的历史往来，再在全部记忆里找其他客户的类似问答——给 AI 前会隐藏价格、百分比和客户名。"
+          desc="选定会话里你发出的问答会转成向量。起草时只参考这个客户自己的历史往来（保持说法一致）；润色时在全部记忆里找类似问题，学你的语气和回答方式——其他客户的价格、百分比和名字会先隐藏，内容不会被搬进新邮件。"
           action={<button className="btn-primary" onClick={() => setPickOpen(true)}><Icon name="plus" />记住一次对话</button>} />
 
         <div className="mb-6 grid grid-cols-3 gap-3">

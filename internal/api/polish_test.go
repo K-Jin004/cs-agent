@@ -196,33 +196,32 @@ func TestStripNestedCitation(t *testing.T) {
 	}
 }
 
-func TestGuardOtherTerms(t *testing.T) {
-	other := []store.Memory{{OtherCustomer: true, Content: "客户：Warranty and logo?\n业务员：We offer a 5-year warranty and free logo printing for orders above 1000 pcs."}}
-	draft := "Hi Nina,\n\n- Warranty: 5 years.\n- We offer free logo printing for orders above 1000 pcs.\n- Power: 40W.\n\nBest regards"
-	got, notes := guardOtherTerms(draft, other, "")
-	if len(notes) != 2 {
-		t.Fatalf("want 2 notes, got %v\n%s", notes, got)
+func TestAddedTerms(t *testing.T) {
+	before := "Hi Nina,\n\nThe price for 3000 pcs is USD 8.5/pc. Lead time is 25 days.\nFeel free to contact us."
+	if got := addedTerms(before, "Hi Nina, the price for 3000 pcs is USD 8.5/pc and lead time is 25 days. Please feel free to reach out."); len(got) != 0 {
+		t.Fatalf("no new terms expected, got %v", got)
 	}
-	if !strings.Contains(got, "- Warranty: [需业务员确认：5 years"+otherTermHint+"].") ||
-		!strings.Contains(got, "- [需业务员确认：We offer free logo printing for orders above 1000 pcs"+otherTermHint+"].") ||
-		!strings.Contains(got, "- Power: 40W.") {
-		t.Fatalf("unexpected:\n%s", got)
+	got := addedTerms(before, "Hi Nina, USD 8.5/pc, lead time 25 days, and we offer a free warranty on all panels.")
+	if !reflect.DeepEqual(got, []string{"free", "warranty"}) {
+		t.Fatalf("got %v", got)
 	}
-	// 业务员自己说过 / 本客户历史里有 → 不改
-	if _, n := guardOtherTerms(draft, other, "We offer 5 years warranty and free logo printing above 1000 pcs"); len(n) != 0 {
-		t.Fatalf("supported terms should pass, got %v", n)
+	if got := addedTerms("请确认。", "请确认，我们提供免费样品。"); !reflect.DeepEqual(got, []string{"免费", "样品"}) {
+		t.Fatalf("got %v", got)
 	}
-	// 没有其他客户的记忆 → 不改
-	if g, n := guardOtherTerms(draft, nil, ""); g != draft || n != nil {
-		t.Fatal("no other memories should be a no-op")
+}
+
+func TestPolishQuery(t *testing.T) {
+	msgs := []store.Message{
+		{Sender: "customer", Status: "sent", Content: "old q"},
+		{Sender: "agent", Status: "sent", Content: "old a"},
+		{Sender: "customer", Status: "sent", Content: "q1"},
+		{Sender: "customer", Status: "sent", Content: "q2"},
+		{Sender: "ai_draft", Status: "draft", Content: "draft"},
 	}
-	// 年限对不上 → 改
-	if _, n := guardOtherTerms("Warranty: 5 years.", other, "warranty: 3 years"); len(n) != 1 {
-		t.Fatalf("number mismatch should wrap, got %v", n)
+	if got := polishQuery(msgs, "d"); got != "q1\nq2" {
+		t.Fatalf("got %q", got)
 	}
-	// 已在占位符里的不动
-	ph := "Warranty: [需业务员确认：保修期（其他客户：5-year warranty）]"
-	if g, _ := guardOtherTerms(ph, other, ""); g != ph {
-		t.Fatalf("placeholder touched: %s", g)
+	if got := polishQuery(msgs[:2], "d"); got != "d" {
+		t.Fatalf("follow-up should fall back to draft, got %q", got)
 	}
 }

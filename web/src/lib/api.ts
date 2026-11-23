@@ -103,7 +103,7 @@ export const api = {
   send: (msgId: number, content: string) => req<Message>(`/api/messages/${msgId}/send`, 'POST', { content }),
   discard: (msgId: number) => req<null>(`/api/messages/${msgId}/discard`, 'POST'),
   polish: (msgId: number, content: string) =>
-    req<{ content: string; numbers_checked: number; attempts: number }>(`/api/messages/${msgId}/polish`, 'POST', { content }),
+    req<{ content: string; numbers_checked: number; attempts: number; references: Memory[] }>(`/api/messages/${msgId}/polish`, 'POST', { content }),
   setRemember: (id: number, remember: boolean) =>
     req<{ remember: boolean; saved: number }>(`/api/conversations/${id}/remember`, 'POST', { remember }),
   contactMemories: (id: number) => req<Memory[]>(`/api/conversations/${id}/memories`),

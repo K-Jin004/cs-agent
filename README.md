@@ -60,18 +60,17 @@ The UI is a React + TypeScript + Tailwind app in `web/`. Its production build (`
 
 ## Features
 
-**Reply drafts** — Built from the last 20 messages of the conversation plus retrieved references, in this priority order:
-1. **History with this customer** — past replies the rep actually sent to this customer.
-2. **Similar Q&A (global memory)** — how we answered the same kind of question for *other* customers. Their prices, percentages and names are masked in code before the model sees them, and their commercial terms may only appear inside placeholders.
-3. **Knowledge base** — company reference material, used as a supporting check.
+**Reply drafts** — Built from the last 20 messages of the conversation plus two references:
+1. **History with this customer** — remembered Q&A from this customer's past conversations, so answers stay consistent.
+2. **Knowledge base** — company reference material for product facts.
 
-When past replies and the knowledge base disagree, the draft writes a placeholder listing both versions.
+Other customers' memories are *not* used for drafting. The draft states product facts found in the references and leaves every commercial term (price, MOQ, lead time, payment, warranty, …) as a placeholder for the rep to fill in. When past replies and the knowledge base disagree, the draft writes a placeholder listing both versions.
 
-**Memory** — Turn on **记住这次对话** (remember this conversation) and every reply the rep sends is stored as a customer-question + reply pair, embedded with bge-m3 into pgvector. The Memory page lets you remember past conversations, filter by customer, and delete entries.
+**Memory** — Turn on **记住这次对话** (remember this conversation) and every reply the rep sends is stored as a customer-question + reply pair, embedded with bge-m3 into pgvector. Memory is used twice: this customer's memories ground the draft, and *all* memories teach polish how the rep answers similar questions. The Memory page lets you remember past conversations, filter by customer, and delete entries.
 
 **Knowledge base** — Upload `.txt` / `.md` or paste text. Documents are split heading-aware (800 chars, 100 overlap) and retrieved with hybrid search: dense vectors + Postgres full-text, fused with RRF. Includes a search-test panel.
 
-**Polish** — After the rep fills in the placeholders, the model rewrites the draft into fluent text. Code verifies the set of numbers is unchanged (up to 2 attempts), and polish is refused while placeholders remain. One click undoes it.
+**Polish** — After the rep fills in the placeholders, polish rewrites the draft so it reads like the rep wrote it. It retrieves the most similar remembered Q&A across *all* customers (top 3) and uses them only as style references: greeting and sign-off habits, sentence length, tone, and how answers are organized. Other customers' prices, percentages and names are masked first. Code rejects a polished version (up to 2 attempts) if any number changed, a placeholder remains, a commercial term not in the rep's draft appears (warranty, free, MOQ, payment, …), or a new denial appears. The UI shows which past answers were used, and one click undoes it.
 
 **AI compose** — Drafts from a rep instruction even without a new customer message. The instruction overrides everything else; short answers like "yes" are treated as the answer. Follow-ups do not repeat the previous email. Tone examples come only from replies the rep substantially edited.
 
@@ -80,8 +79,7 @@ When past replies and the knowledge base disagree, the draft writes a placeholde
 - numbers with no source;
 - commitments made on the rep's behalf ("price remains valid", "guarantee");
 - denials ("we don't have …") not backed by the knowledge base;
-- drafts that contradict an affirmative instruction (retried once automatically);
-- commercial terms copied from other customers (rewritten into placeholders).
+- drafts that contradict an affirmative instruction (retried once automatically).
 
 Citation markers, signature placeholders and template tokens are stripped automatically.
 
