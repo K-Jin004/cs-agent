@@ -1,2 +1,3 @@
 data/
 .env
+web/node_modules/

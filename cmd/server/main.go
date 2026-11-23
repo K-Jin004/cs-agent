@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	_ "embed"
+	"embed"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -13,8 +14,11 @@ import (
 	"cs-agent/internal/store"
 )
 
-//go:embed web/index.html
-var indexHTML []byte
+// 前端：web/（React + Vite）构建到 cmd/server/web/dist，再打包进二进制。
+// 改前端后在 web/ 下运行 npm run build。
+//
+//go:embed all:web/dist
+var webDist embed.FS
 
 func env(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -54,10 +58,11 @@ func main() {
 	mux := http.NewServeMux()
 	emb := llm.NewOllamaEmbedder(env("OLLAMA_URL", "http://127.0.0.1:11434"), env("EMBED_MODEL", "bge-m3"))
 	api.New(st, newLLM(), emb).Routes(mux)
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "text/html; charset=utf-8")
-		_, _ = w.Write(indexHTML)
-	})
+	dist, err := fs.Sub(webDist, "web/dist")
+	if err != nil {
+		log.Fatalf("web: %v", err)
+	}
+	mux.Handle("GET /", http.FileServerFS(dist))
 
 	addr := env("ADDR", "127.0.0.1:8090")
 	log.Printf("listening on http://%s", addr)

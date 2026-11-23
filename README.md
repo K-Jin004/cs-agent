@@ -40,6 +40,15 @@ To use the Claude API instead of Ollama:
 
 Database migrations in `internal/store/migrations/` run automatically on startup.
 
+### Frontend
+
+The UI is a React + TypeScript + Tailwind app in `web/`. Its production build (`cmd/server/web/dist`) is committed and embedded into the Go binary, so `go run ./cmd/server` works without Node. To change the UI:
+
+    cd web
+    npm install
+    npm run dev        # http://localhost:5173, proxies /api to the Go server on :8090
+    npm run build      # writes cmd/server/web/dist; restart the Go server to embed it
+
 ## Quick tour
 
 1. Create a conversation (customer name, email, language).
@@ -80,7 +89,8 @@ Citation markers, signature placeholders and template tokens are stripped automa
 
 ## Code layout
 
-    cmd/server          entry point + embedded single-page frontend
+    cmd/server          entry point; embeds the built frontend (web/dist)
+    web                 React + TypeScript + Tailwind frontend (Vite)
     internal/store      Postgres access + migration SQL
     internal/llm        Ollama / Claude chat clients, Ollama embeddings (stdlib only)
     internal/api        HTTP API: drafts, compose, memory, knowledge base, polish, safety checks

@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/* 设计语言沿用 nexus-agent：四级黑底 + 荧光绿主色，低饱和灰阶分层 */
+@theme {
+  --color-void: #08090a;
+  --color-carbon: #0f1011;
+  --color-obsidian: #161718;
+  --color-graphite: #23252a;
+  --color-smoke: #383b3f;
+  --color-ash: #62666d;
+  --color-fog: #8a8f98;
+  --color-mist: #d0d6e0;
+  --color-bone: #e5e5e6;
+  --color-lime: #e4f222;
+  --color-teal: #02b8cc;
+  --color-coral: #eb5757;
+  --color-amber: #f2a93b;
+  --color-pulse: #27a644;
+  --color-violet: #8b8ff8;
+  --font-sans: Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", Menlo, Consolas, monospace;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  :root { color-scheme: dark; }
+  body { @apply bg-void font-sans text-mist antialiased; font-size: 14px; }
+  * { scrollbar-width: thin; scrollbar-color: #383b3f transparent; }
+  ::selection { background: rgb(228 242 34 / 0.8); color: #08090a; }
+  button { cursor: pointer; }
+  button:disabled { cursor: default; }
+}
+
+/* Tailwind v4：可被 @apply 复用的组件类用 @utility 定义 */
+@utility panel {
+  @apply rounded-xl border border-smoke/60 bg-obsidian;
+}
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3.5 py-2 text-sm transition-all duration-200 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40;
+}
+@utility btn-primary {
+  @apply btn bg-lime font-semibold text-void hover:brightness-110;
+}
+@utility btn-ghost {
+  @apply btn border border-smoke text-mist hover:border-fog hover:text-bone;
+}
+@utility btn-quiet {
+  @apply btn text-fog hover:bg-graphite hover:text-bone;
+}
+@utility btn-danger {
+  @apply btn border border-coral/40 text-coral hover:bg-coral/10;
+}
+@utility field {
+  @apply w-full rounded-lg border border-smoke bg-graphite px-3 py-2 text-sm text-bone outline-none transition-colors duration-200 placeholder:text-ash focus:border-lime/60 disabled:opacity-50;
+}
+@utility field-label {
+  @apply mb-1.5 block text-xs font-medium text-fog;
+}
+@utility section-title {
+  @apply text-[11px] font-semibold uppercase tracking-widest text-ash;
+}
+
+@keyframes fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes slide-in { from { transform: translateX(100%); } to { transform: none; } }
+@keyframes pop { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
+@keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+.anim-fade-up { animation: fade-up 0.35s var(--ease-out-expo) both; }
+.anim-slide-in { animation: slide-in 0.35s var(--ease-out-expo) both; }
+.anim-pop { animation: pop 0.2s var(--ease-out-expo) both; }
+.shimmer {
+  background: linear-gradient(90deg, transparent, rgb(228 242 34 / 0.12), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+.text-glow { text-shadow: 0 0 18px rgb(228 242 34 / 0.45); }
